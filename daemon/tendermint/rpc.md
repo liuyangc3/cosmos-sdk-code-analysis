@@ -1,8 +1,29 @@
 # RPC设计解析
 
 ## RPC服务端
-在node启动时会调用`node.startRPC()`方法来监听rpc请求，`node.startRPC()`方法同时会实现以下各种服务的注册。`startRPC()`方法会调用如下代码：
+
+当从命令行启动节点时，`RunE` 调用[startInProcess](https://github.com/cosmos/cosmos-sdk/blob/v0.46.7/server/start.go#L143)
+```go
+RunE: func(cmd *cobra.Command, _ []string) error {
+	...
+	startInProcess(serverCtx, clientCtx, appCreator)
+}
 ```
+
+关键代码如下（有省略），https://github.com/cosmos/cosmos-sdk/blob/v0.46.7/server/start.go#L405
+```go
+var apiSrv *api.Server
+apiSrv = api.New(clientCtx, ctx.Logger.With("module", "api-server"))
+app.RegisterAPIRoutes(apiSrv, config.API)
+go func() {
+	if err := apiSrv.Start(config); err != nil {
+		errCh <- err
+	}
+}()
+```
+
+在node启动时会调用`node.startRPC()`方法来监听rpc请求，`node.startRPC()`方法同时会实现以下各种服务的注册。`startRPC()`方法会调用如下代码：
+```go
 func RegisterRPCFuncs(mux *http.ServeMux, funcMap map[string]*RPCFunc, cdc *amino.Codec, logger log.Logger) {
 	// HTTP endpoints
 	for funcName, rpcFunc := range funcMap {
@@ -17,8 +38,8 @@ func RegisterRPCFuncs(mux *http.ServeMux, funcMap map[string]*RPCFunc, cdc *amin
 
 * http协议。默认的是`:26657`端口。在这个地址上同时支持两种更具体的协议：
 1. 普通http协议。具体注册的方法如下：
-    ```
-//tendermint/rpc/core/routes.go
+```go
+// tendermint/rpc/core/routes.go
 var Routes = map[string]*rpc.RPCFunc{
 	// info API
 	"health":               rpc.NewRPCFunc(Health, ""),
@@ -45,11 +66,10 @@ var Routes = map[string]*rpc.RPCFunc{
 	"abci_query": rpc.NewRPCFunc(ABCIQuery, "path,data,height,prove"),
 	"abci_info":  rpc.NewRPCFunc(ABCIInfo, ""),
 }
-
-    ```
-    配置文件config.toml的`unsafe`字段默认配置为false,设置true时会注册如下api：
-    ```
-//tendermint/rpc/core/routes.go
+```
+配置文件config.toml的`unsafe`字段默认配置为false,设置true时会注册如下api：
+```go
+// tendermint/rpc/core/routes.go
 func AddUnsafeRoutes() {
 	// control API
 	Routes["dial_seeds"] = rpc.NewRPCFunc(UnsafeDialSeeds, "seeds")
@@ -61,10 +81,10 @@ func AddUnsafeRoutes() {
 	Routes["unsafe_stop_cpu_profiler"] = rpc.NewRPCFunc(UnsafeStopCPUProfiler, "")
 	Routes["unsafe_write_heap_profile"] = rpc.NewRPCFunc(UnsafeWriteHeapProfile, "filename")
 }
-    ```
+```
 
 2. websocket协议。注册方法如下：
-    ```
+```
 //tendermint/rpc/core/routes.go
     var Routes = map[string]*rpc.RPCFunc{
 	// subscribe/unsubscribe are reserved for websocket events.
@@ -72,7 +92,7 @@ func AddUnsafeRoutes() {
 	"unsubscribe":     rpc.NewWSRPCFunc(Unsubscribe, "query"),
 	"unsubscribe_all": rpc.NewWSRPCFunc(UnsubscribeAll, ""),
     }
-    ```
+```
     访问此服务的uri都是`/websocket`。`rpc/lib/server/handlers.go:WebsocketManager`类对进入的普通http请求进行升级为websocket协议，并处理后续的业务逻辑处理。任何`/websocket`的请求都会启动两个goroutine来处理websocket的读写问题。
 
 * GRPC协议。默认配置是不开启此服务的。注册的服务也只有以下两个：
