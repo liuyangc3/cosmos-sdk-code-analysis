@@ -1,6 +1,6 @@
 # RPC设计解析
 
-## RPC服务端
+## API 服务端
 
 当从命令行启动节点时，`RunE` 调用[startInProcess](https://github.com/cosmos/cosmos-sdk/blob/v0.46.7/server/start.go#L143)
 ```go
@@ -21,6 +21,73 @@ go func() {
 	}
 }()
 ```
+整个过程分为3步:
+* 创建 api http server
+* 注册路由，即 grpc http handler
+* 启动 http server
+
+app.RegisterAPIRoutes 将 handler 注入 grpc http server mux，一般是在 application 侧实现, 例如 gaiad 的[实现](https://github.com/cosmos/gaia/blob/v7.1.0/app/app.go#L799) 如下
+```go
+// RegisterAPIRoutes registers all application module routes with the provided
+// API server.
+func (app *GaiaApp) RegisterAPIRoutes(apiSvr *api.Server, apiConfig config.APIConfig) {
+	clientCtx := apiSvr.ClientCtx
+	rpc.RegisterRoutes(clientCtx, apiSvr.Router)
+	// Register legacy tx routes.
+	authrest.RegisterTxRoutes(clientCtx, apiSvr.Router)
+	// Register new tx routes from grpc-gateway.
+	authtx.RegisterGRPCGatewayRoutes(clientCtx, apiSvr.GRPCGatewayRouter)
+	// Register new tendermint queries routes from grpc-gateway.
+	tmservice.RegisterGRPCGatewayRoutes(clientCtx, apiSvr.GRPCGatewayRouter)
+
+	// Register legacy and grpc-gateway routes for all modules.
+	ModuleBasics.RegisterRESTRoutes(clientCtx, apiSvr.Router)
+	ModuleBasics.RegisterGRPCGatewayRoutes(clientCtx, apiSvr.GRPCGatewayRouter)
+
+	// register swagger API from root so that other applications can override easily
+	if apiConfig.Swagger {
+		RegisterSwaggerAPI(apiSvr.Router)
+	}
+}
+```
+
+可以看到注入的 handler 有 module 的 route 例如 `auth/tx`， 还有 tmservice， 或者 Swagger，其中 
+- authtx 处理 uri 为`/cosmos/tx/v1beta1/txs/*` 和 `/cosmos/tx/v1beta1/simulate` 的请求
+- tmservice 处理 uri 为 `/cosmos/base/tendermint/v1beta1/*` 的请求
+
+
+`Start` 负责启动 server， 其关键代码如下：
+```go
+// Start starts the API server. Internally, the API server leverages Tendermint's
+// JSON RPC server. Configuration options are provided via config.APIConfig
+// and are delegated to the Tendermint JSON RPC server. The process is
+// non-blocking, so an external signal handler must be used.
+func (s *Server) Start(cfg config.Config) error {
+	...
+	listener, err := tmrpcserver.Listen(cfg.API.Address, tmCfg)
+	if err != nil {
+		s.mtx.Unlock()
+		return err
+	}
+
+	s.registerGRPCGatewayRoutes()
+	s.listener = listener
+
+	s.logger.Info("starting API server...")
+	return tmrpcserver.Serve(s.listener, s.Router, s.logger, tmCfg)
+}
+
+func (s *Server) registerGRPCGatewayRoutes() {
+	s.Router.PathPrefix("/").Handler(s.GRPCGatewayRouter)
+}
+```
+
+`cfg.API.Address` 默认的是`"tcp://0.0.0.0:1317"`，另外可以看到，uri为`/`的请求都交给 `GRPCGatewayRouter` hanlder 处理。
+
+
+## GRPC 服务端
+
+TODO 
 
 在node启动时会调用`node.startRPC()`方法来监听rpc请求，`node.startRPC()`方法同时会实现以下各种服务的注册。`startRPC()`方法会调用如下代码：
 ```go
@@ -36,7 +103,7 @@ func RegisterRPCFuncs(mux *http.ServeMux, funcMap map[string]*RPCFunc, cdc *amin
 ```
 这样rpc服务可以有两种方式进行访问，一种是jsonrpc的方法访问服务，这种方法uri都是`/`，通过接受post的json数据进行通信，tendermint代码封装的client就是用这种方法。另外一种是通过不同的uri进行访问，方便网页进行访问等。rpc服务可以同时监听两个端口，采用以下不同的两种协议：
 
-* http协议。默认的是`:26657`端口。在这个地址上同时支持两种更具体的协议：
+
 1. 普通http协议。具体注册的方法如下：
 ```go
 // tendermint/rpc/core/routes.go
